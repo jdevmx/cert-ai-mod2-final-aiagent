@@ -1,0 +1,49 @@
+---
+description: Core development rules and guidelines for the 4x4 Off-Road Vehicle Advisor project, applicable to all AI agents (Claude, Cursor, Codex, Gemini, etc.).
+alwaysApply: true
+---
+
+## 1. Core Principles
+
+- **Small tasks, one at a time**: Always work in baby steps, one at a time. Never go forward more than one step.
+- **Test-Driven Development**: Start with failing tests for any new functionality (TDD), according to the task details.
+- **Type Safety**: All code must be fully typed — Python type hints on all functions; TypeScript strict mode on all frontend files.
+- **Clear Naming**: Use clear, descriptive names for all variables and functions.
+- **Incremental Changes**: Prefer incremental, focused changes over large, complex modifications.
+- **Question Assumptions**: Always question assumptions and inferences.
+- **Pattern Detection**: Detect and highlight repeated code patterns.
+
+## 2. Language Standards
+
+- **English Only**: All technical artifacts must always use English, including:
+  - Code (variables, functions, classes, comments, error messages, log messages)
+  - Documentation (README, guides, API docs, CASE_STUDY)
+  - Data schemas and Firestore field names
+  - Configuration files and scripts
+  - Git commit messages
+  - Test names and descriptions
+
+## 3. Stack Quick Reference
+
+| Layer | Technology |
+| --- | --- |
+| Backend language | Python 3.11 |
+| Backend framework | FastAPI + uvicorn |
+| AI agent | LangChain ReAct + GPT-4o |
+| Search tool | Tavily API |
+| Database | Firebase Firestore |
+| Frontend framework | React 18 + Vite + TypeScript |
+| Frontend styling | Tailwind CSS (no external component libs) |
+| Frontend streaming | Native EventSource (SSE) |
+| Infrastructure | Terraform on GCP (Cloud Run + Secret Manager) |
+| CI/CD | GitHub Actions |
+| Backend tests | pytest + pytest-asyncio (Nullable/Stub pattern, no mocking frameworks) |
+| Frontend tests | Vitest + @testing-library/react |
+
+## 4. Specific Standards
+
+For detailed standards specific to each layer, refer to:
+
+- [Backend Standards](./ai-specs/specs/backend-standards.mdc) — FastAPI, LangChain, Firestore, pytest, Docker
+- [Frontend Standards](./ai-specs/specs/frontend-standards.mdc) — React, Vite, Tailwind CSS, SSE, Vitest
+- [Documentation Standards](./ai-specs/specs/documentation-standards.mdc) — Docs structure, update process, AI spec rules

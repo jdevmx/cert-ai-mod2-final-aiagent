@@ -1,0 +1,57 @@
+# ─── Python ───────────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+.Python
+.venv/
+venv/
+env/
+*.egg-info/
+dist/
+build/
+.pytest_cache/
+.coverage
+htmlcov/
+*.log
+
+# ─── Node / Frontend ──────────────────────────────────────────────────────────
+node_modules/
+dist/
+.vite/
+coverage/
+*.local
+
+# ─── Environment & Secrets ────────────────────────────────────────────────────
+.env
+.env.*
+!.env.example
+*.json.key
+firebase-adminsdk*.json
+service-account*.json
+
+# ─── Terraform ────────────────────────────────────────────────────────────────
+.terraform/
+.terraform.lock.hcl
+*.tfstate
+*.tfstate.backup
+*.tfvars
+!*.tfvars.example
+crash.log
+override.tf
+override.tf.json
+
+# ─── macOS ────────────────────────────────────────────────────────────────────
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# ─── IDE ──────────────────────────────────────────────────────────────────────
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# ─── Misc ─────────────────────────────────────────────────────────────────────
+*.pdf

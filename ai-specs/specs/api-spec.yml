@@ -1,0 +1,393 @@
+openapi: 3.0.0
+info:
+  title: 4x4 Off-Road Advisor API
+  description: |
+    REST + SSE API for the 4x4 Off-Road Vehicle Advisor AI agent.
+    Built with FastAPI (Python 3.11) and LangChain + GPT-4o.
+
+    ## Features
+    - Conversational AI agent with persistent chat history (Firestore)
+    - Real-time token streaming via Server-Sent Events (SSE)
+    - User rig profile management (vehicle, tires, lift, skill level)
+    - Tavily-powered web search for current market data
+
+    ## Authentication
+    For the MVP, user identity is passed as a path/query parameter (`user_id`).
+    Production deployments should add Firebase Auth bearer token validation.
+
+  version: 1.0.0
+  contact:
+    name: BSG Institute — Module 2 Final Project
+
+servers:
+  - url: http://localhost:8000
+    description: Local development server
+  - url: https://advisor-api-<hash>-uc.a.run.app
+    description: GCP Cloud Run production
+
+paths:
+
+  /api/chat:
+    post:
+      summary: Send a chat message (non-streaming)
+      description: |
+        Sends a user message to the LangChain ReAct agent and returns the full
+        AI response as a single JSON object. Conversation history is loaded from
+        and saved to Firestore automatically.
+      tags:
+        - Chat
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ChatRequest'
+      responses:
+        '200':
+          description: AI agent response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ChatResponse'
+        '400':
+          description: Invalid request body
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Agent or Firestore error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /api/chat/stream:
+    get:
+      summary: Stream a chat response via SSE
+      description: |
+        Opens a Server-Sent Events stream. Each `data:` event contains a partial
+        token from the agent. A final `event: done` signals completion.
+        The conversation is persisted to Firestore after the stream ends.
+
+        **SSE Event Protocol:**
+        - `data: <token>` — partial token string
+        - `event: done\ndata: {}` — stream finished
+        - `event: error\ndata: {"detail": "<message>"}` — stream error
+      tags:
+        - Chat
+      parameters:
+        - in: query
+          name: user_id
+          required: true
+          schema:
+            type: string
+          description: Firestore user document ID
+        - in: query
+          name: message
+          required: true
+          schema:
+            type: string
+          description: User's chat message
+      responses:
+        '200':
+          description: SSE token stream
+          content:
+            text/event-stream:
+              schema:
+                type: string
+                description: Stream of SSE events
+        '400':
+          description: Missing required query parameters
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Streaming error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /api/users/{user_id}/profile:
+    get:
+      summary: Get user rig profile
+      description: Retrieves the user's 4x4 rig profile from the Firestore `users` collection.
+      tags:
+        - Users
+      parameters:
+        - in: path
+          name: user_id
+          required: true
+          schema:
+            type: string
+          description: Firestore user document ID
+      responses:
+        '200':
+          description: User profile retrieved
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserProfile'
+        '404':
+          description: User profile not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Firestore error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+    put:
+      summary: Update user rig profile
+      description: |
+        Creates or updates the user's rig profile in Firestore.
+        This data is injected into the agent's system prompt on every conversation turn.
+      tags:
+        - Users
+      parameters:
+        - in: path
+          name: user_id
+          required: true
+          schema:
+            type: string
+          description: Firestore user document ID
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UserProfileUpdate'
+      responses:
+        '200':
+          description: Profile updated successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserProfile'
+        '400':
+          description: Validation error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Firestore error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /api/users/{user_id}/conversations:
+    get:
+      summary: Get conversation history
+      description: Returns the full message history for a user from the Firestore `conversations` collection.
+      tags:
+        - Users
+      parameters:
+        - in: path
+          name: user_id
+          required: true
+          schema:
+            type: string
+          description: Firestore user document ID
+      responses:
+        '200':
+          description: Conversation history
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConversationHistory'
+        '200 (empty)':
+          description: No conversation yet — returns empty messages array
+        '500':
+          description: Firestore error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+    delete:
+      summary: Clear conversation history
+      description: Deletes all messages for a user (resets the conversation). Profile is not affected.
+      tags:
+        - Users
+      parameters:
+        - in: path
+          name: user_id
+          required: true
+          schema:
+            type: string
+          description: Firestore user document ID
+      responses:
+        '204':
+          description: Conversation cleared
+        '500':
+          description: Firestore error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /health:
+    get:
+      summary: Health check
+      description: Returns service status. Used by Cloud Run health probe.
+      tags:
+        - System
+      responses:
+        '200':
+          description: Service is healthy
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: ok
+
+components:
+  schemas:
+
+    ChatRequest:
+      type: object
+      required:
+        - user_id
+        - message
+      properties:
+        user_id:
+          type: string
+          description: Firestore user document ID
+          example: user_abc123
+        message:
+          type: string
+          description: User's chat message
+          example: "What tire pressure should I run on sand trails?"
+
+    ChatResponse:
+      type: object
+      properties:
+        user_id:
+          type: string
+        message:
+          type: string
+          description: Full AI agent response text
+          example: "For sand, airing down to 15–18 PSI on your 33s will dramatically improve flotation..."
+        conversation_length:
+          type: integer
+          description: Total number of messages in the conversation after this turn
+
+    UserProfile:
+      type: object
+      properties:
+        user_id:
+          type: string
+        display_name:
+          type: string
+          example: "Alex T."
+        email:
+          type: string
+          format: email
+        vehicle:
+          type: string
+          description: Vehicle make, model, year
+          example: "2022 Toyota 4Runner TRD Pro"
+        lift_height_in:
+          type: number
+          description: Suspension lift in inches (0 = stock)
+          example: 3.0
+        tire_size:
+          type: string
+          description: Tire size string
+          example: "285/70R17"
+        locking_diffs:
+          type: boolean
+          description: Whether the rig has locking differentials
+          example: true
+        primary_use:
+          type: string
+          enum: [trail, overlanding, daily]
+          example: overlanding
+        skill_level:
+          type: string
+          enum: [beginner, intermediate, expert]
+          example: intermediate
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+    UserProfileUpdate:
+      type: object
+      properties:
+        display_name:
+          type: string
+        email:
+          type: string
+          format: email
+        vehicle:
+          type: string
+        lift_height_in:
+          type: number
+          minimum: 0
+        tire_size:
+          type: string
+        locking_diffs:
+          type: boolean
+        primary_use:
+          type: string
+          enum: [trail, overlanding, daily]
+        skill_level:
+          type: string
+          enum: [beginner, intermediate, expert]
+
+    ConversationMessage:
+      type: object
+      properties:
+        role:
+          type: string
+          enum: [human, ai]
+        content:
+          type: string
+        timestamp:
+          type: string
+          format: date-time
+
+    ConversationHistory:
+      type: object
+      properties:
+        user_id:
+          type: string
+        messages:
+          type: array
+          items:
+            $ref: '#/components/schemas/ConversationMessage'
+        updated_at:
+          type: string
+          format: date-time
+
+    ErrorResponse:
+      type: object
+      required:
+        - detail
+      properties:
+        detail:
+          type: string
+          description: Error message
+          example: "User profile not found"
+
+tags:
+  - name: Chat
+    description: AI agent conversation endpoints
+  - name: Users
+    description: User profile and conversation history management
+  - name: System
+    description: Health and infrastructure endpoints

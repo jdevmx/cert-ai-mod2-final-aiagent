@@ -1,0 +1,334 @@
+---
+description: Frontend development standards, best practices, and conventions for the 4x4 Off-Road Advisor React/Vite/Tailwind application, including component patterns, SSE streaming, service layer, state management, Vitest testing, and deployment configuration.
+globs: ["frontend/src/**/*.{ts,tsx}", "frontend/vite.config.ts", "frontend/tailwind.config.ts", "frontend/package.json"]
+alwaysApply: true
+---
+
+# Frontend Standards and Best Practices
+
+## Overview
+
+This document defines standards for the React frontend of the 4x4 Off-Road Vehicle Advisor.
+The frontend is a TypeScript + Vite + Tailwind CSS SPA that communicates with the FastAPI
+backend via REST and Server-Sent Events (SSE) for real-time streaming.
+
+---
+
+## Technology Stack
+
+- **Framework**: React 18 with functional components and hooks
+- **Build tool**: Vite 5
+- **Language**: TypeScript 5 (strict mode)
+- **Styling**: Tailwind CSS 3 — utility classes only, no external component libraries
+- **Testing**: Vitest + @testing-library/react
+- **HTTP**: native `fetch` API for REST; native `EventSource` API for SSE
+- **Routing**: React Router DOM v6 (if multi-page needed; single-page is acceptable for MVP)
+
+---
+
+## Project Structure
+
+```text
+frontend/
+├── index.html
+├── vite.config.ts
+├── tailwind.config.ts
+├── tsconfig.json
+└── src/
+    ├── main.tsx               # App entry point
+    ├── App.tsx                # Root component
+    ├── components/
+    │   ├── ChatWindow.tsx     # Main chat interface (message list + input)
+    │   ├── MessageBubble.tsx  # Single message bubble (human or ai)
+    │   ├── ChatInput.tsx      # Text input + send button
+    │   └── UserProfilePanel.tsx  # Rig specs display sidebar
+    ├── services/
+    │   ├── chatService.ts     # SSE stream + POST /api/chat
+    │   └── userService.ts     # GET/PUT /api/users/{id}/profile
+    ├── hooks/
+    │   └── useSSEChat.ts      # Custom hook: SSE lifecycle + message state
+    └── __tests__/
+        ├── ChatWindow.test.tsx
+        ├── MessageBubble.test.tsx
+        ├── useSSEChat.test.ts
+        └── chatService.test.ts
+```
+
+---
+
+## Coding Standards
+
+### Language and Naming Conventions
+
+- **English only**: all variable names, function names, type names, comments, error messages.
+- **PascalCase** for React components and TypeScript interfaces/types (`ChatWindow`, `UserProfile`).
+- **camelCase** for variables, functions, and hooks (`useSSEChat`, `sendMessage`).
+- **camelCase with suffix** for service modules (`chatService.ts`, `userService.ts`).
+- **camelCase with `use` prefix** for custom hooks (`useSSEChat.ts`).
+- All component files use `.tsx` extension. All non-component TypeScript files use `.ts`.
+
+### TypeScript
+
+- Strict mode enabled in `tsconfig.json` (`"strict": true`).
+- All component props defined as a `type` (not `interface`) in the same file:
+
+```typescript
+type MessageBubbleProps = {
+  role: "human" | "ai";
+  content: string;
+  isStreaming?: boolean;
+};
+```
+
+- Avoid `any`. Use `unknown` and narrow with type guards when the type is genuinely unknown.
+- Use `import type` for type-only imports.
+
+---
+
+## Tailwind CSS Conventions
+
+- **No custom CSS files** beyond `src/index.css` (which only contains `@tailwind` directives).
+- **No external component libraries** (no Bootstrap, MUI, Chakra, etc.).
+- Color palette for the chat UI:
+
+| Element | Tailwind class |
+| --- | --- |
+| Page background | `bg-gray-900` |
+| Sidebar / panel | `bg-gray-800` |
+| Chat area background | `bg-gray-850` (custom, or `bg-gray-800`) |
+| Human message bubble | `bg-blue-600 text-white` |
+| AI message bubble | `bg-gray-700 text-gray-100` |
+| Input bar | `bg-gray-800 border-gray-600` |
+| Primary button | `bg-blue-600 hover:bg-blue-700` |
+
+- Use `flex`, `flex-col`, `flex-1`, and `overflow-y-auto` for the scrollable chat layout.
+- Use `animate-pulse` for the streaming cursor on the AI bubble.
+- Use `animate-spin` for loading spinners.
+
+---
+
+## SSE Streaming
+
+### Protocol
+
+The backend `/api/chat/stream` endpoint sends:
+
+```
+data: <partial token>\n\n
+event: done\ndata: {}\n\n
+event: error\ndata: {"detail": "<message>"}\n\n
+```
+
+### Hook: `useSSEChat`
+
+Manage all SSE state in the `useSSEChat` custom hook. Do not open `EventSource` directly in components.
+
+```typescript
+// hooks/useSSEChat.ts
+export function useSSEChat(userId: string) {
+  const [messages, setMessages] = useState<Message[]>([]);
+  const [isStreaming, setIsStreaming] = useState(false);
+  const esRef = useRef<EventSource | null>(null);
+
+  const sendMessage = (text: string) => {
+    // 1. Append human message to state
+    // 2. Open EventSource to /api/chat/stream
+    // 3. On message event: accumulate tokens into streaming AI bubble
+    // 4. On event:done: mark isStreaming=false, close EventSource
+    // 5. On event:error: show error, close EventSource
+  };
+
+  useEffect(() => {
+    return () => esRef.current?.close(); // cleanup on unmount
+  }, []);
+
+  return { messages, isStreaming, sendMessage };
+}
+```
+
+### Rules
+
+- Always close the `EventSource` on component unmount.
+- Never open more than one `EventSource` at a time — close the previous one before opening a new one.
+- The streaming AI bubble is identified in state with `isStreaming: true`; flip to `false` on `event: done`.
+
+---
+
+## Service Layer
+
+### `chatService.ts`
+
+```typescript
+const API_BASE = import.meta.env.VITE_API_URL;
+
+export function startSSEStream(userId: string, message: string): EventSource {
+  const url = `${API_BASE}/api/chat/stream?user_id=${encodeURIComponent(userId)}&message=${encodeURIComponent(message)}`;
+  return new EventSource(url);
+}
+
+export async function sendMessage(userId: string, message: string): Promise<ChatResponse> {
+  const res = await fetch(`${API_BASE}/api/chat`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ user_id: userId, message }),
+  });
+  if (!res.ok) throw new Error(`Chat error: ${res.status}`);
+  return res.json() as Promise<ChatResponse>;
+}
+```
+
+### `userService.ts`
+
+```typescript
+export async function getUserProfile(userId: string): Promise<UserProfile> {
+  const res = await fetch(`${API_BASE}/api/users/${userId}/profile`);
+  if (!res.ok) throw new Error(`Profile fetch error: ${res.status}`);
+  return res.json() as Promise<UserProfile>;
+}
+
+export async function updateUserProfile(userId: string, data: Partial<UserProfile>): Promise<UserProfile> {
+  const res = await fetch(`${API_BASE}/api/users/${userId}/profile`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(data),
+  });
+  if (!res.ok) throw new Error(`Profile update error: ${res.status}`);
+  return res.json() as Promise<UserProfile>;
+}
+```
+
+- Use `async/await` with `fetch`. No third-party HTTP client (no axios).
+- Always check `res.ok` and throw on error.
+- Log errors with `console.error` before rethrowing.
+
+---
+
+## Component Conventions
+
+### Functional Components Only
+
+Always use functional components with hooks. Never class components.
+
+### State Management
+
+- Local state with `useState` / `useReducer` inside components.
+- Shared state (messages, streaming status) lives in `useSSEChat` and is passed as props.
+- No global state library (no Redux, Zustand, etc.) in the MVP.
+
+### Loading and Error States
+
+- Every async operation has a loading and error state.
+- Show errors as inline red text (`text-red-400`) within the component, not as modal dialogs.
+- Use a Tailwind spinner (`animate-spin`) while loading, not a separate library.
+
+### Accessibility
+
+- Include `aria-label` on icon-only buttons (e.g., the send button).
+- Use semantic HTML: `<main>`, `<aside>`, `<section>`, `<button>` (not `<div onClick>`).
+- Ensure keyboard navigation works (Tab to input, Enter to send).
+
+---
+
+## Testing Standards (Vitest)
+
+### Rules
+
+- **TDD**: write the failing test first, then the minimum implementation to make it pass.
+- **No mocking frameworks** (`vi.mock`, `vi.fn`, `vi.stubGlobal`). Use Nullable Infrastructure + Stubs instead.
+- **Tests must run in milliseconds.** No timeouts, no async delays, no real network calls.
+- **Coverage target: ≥ 80%** over service and hook layers.
+- All tests in `src/__tests__/`. Use `@testing-library/react` for components.
+- Descriptive test names: `it("renders streaming cursor while AI is typing", ...)`.
+
+### Nullable Infrastructure + Stub Pattern
+
+Service functions are passed as hook parameters (defaulting to the real implementation in production). Tests supply a stub object that behaves synchronously.
+
+**Hook design (accepts injectable service)**
+
+```typescript
+// hooks/useSSEChat.ts
+export function useSSEChat(userId: string, service: ChatService = chatService) {
+  ...
+}
+```
+
+**Stub service**
+
+```typescript
+// __tests__/stubs/stubChatService.ts
+export class StubEventSource {
+  private listeners: Record<string, ((e: MessageEvent) => void)[]> = {};
+
+  addEventListener(type: string, fn: (e: MessageEvent) => void) {
+    (this.listeners[type] ??= []).push(fn);
+  }
+  emit(type: string, data: string) {
+    this.listeners[type]?.forEach(fn => fn({ data } as MessageEvent));
+  }
+  close() {}
+}
+
+export const stubChatService = {
+  startSSEStream: (_userId: string, _msg: string) => new StubEventSource(),
+};
+```
+
+**Test**
+
+```typescript
+it("accumulates tokens while streaming", () => {
+  const stub = new StubEventSource();
+  const service = { startSSEStream: () => stub };
+  const { result } = renderHook(() => useSSEChat("u1", service));
+
+  act(() => result.current.sendMessage("tire pressure?"));
+  act(() => stub.emit("message", "Air"));
+  act(() => stub.emit("message", " down"));
+
+  expect(result.current.streamingContent).toBe("Air down");
+});
+```
+
+Apply the same pattern to `userService` — a `StubUserService` returns preset profile data synchronously.
+
+### Running Tests
+
+```bash
+npm run test          # vitest run (CI)
+npm run test:ui       # vitest --ui (browser UI)
+npm run test:coverage # vitest --coverage
+```
+
+---
+
+## Environment Variables
+
+| Variable | Description | Example |
+| --- | --- | --- |
+| `VITE_API_URL` | FastAPI backend base URL | `http://localhost:8000` |
+| `VITE_DEFAULT_USER_ID` | Dev user ID for local testing | `dev_user_001` |
+
+All Vite env vars must be prefixed with `VITE_` to be exposed to the browser bundle.
+
+---
+
+## Development Scripts
+
+```bash
+npm run dev           # Start Vite dev server (http://localhost:5173)
+npm run build         # Production build to dist/
+npm run preview       # Preview production build locally
+npm run lint          # ESLint
+npm run type-check    # tsc --noEmit
+npm run test          # Vitest
+npm run test:coverage # Vitest with coverage
+```
+
+---
+
+## Build and Deployment
+
+- Production build: `npm run build` outputs to `frontend/dist/`.
+- The `dist/` folder is served as static files by a Nginx container or directly from Cloud Storage + CDN.
+- The `VITE_API_URL` is baked into the bundle at build time — set it correctly in the CD pipeline.

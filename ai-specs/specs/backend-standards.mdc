@@ -1,0 +1,391 @@
+---
+description: Backend development standards, best practices, and conventions for the 4x4 Off-Road Advisor FastAPI/Python/LangChain service, including architecture patterns, API design, Firestore access, LangChain agent conventions, testing with mocks, and deployment standards.
+globs: ["backend/**/*.py", "backend/requirements*.txt", "backend/Dockerfile", "backend/tests/**/*.py"]
+alwaysApply: true
+---
+
+# Backend Standards and Best Practices
+
+## Overview
+
+This document defines standards for the FastAPI backend of the 4x4 Off-Road Vehicle Advisor.
+The backend is a Python 3.11 service that hosts a LangChain ReAct agent (GPT-4o), persists
+conversations and user profiles in Firebase Firestore, and streams responses via SSE.
+
+---
+
+## Technology Stack
+
+- **Runtime**: Python 3.11
+- **Framework**: FastAPI + uvicorn
+- **AI Agent**: LangChain (`langchain`, `langchain-openai`, `langchain-community`)
+- **LLM**: OpenAI GPT-4o via `langchain-openai.ChatOpenAI`
+- **Search Tool**: Tavily via `langchain-community.tools.TavilySearchResults`
+- **Database**: Firebase Firestore via `firebase-admin` Python SDK
+- **Config**: `pydantic-settings` (`BaseSettings`)
+- **Testing**: `pytest`, `pytest-asyncio`, `pytest-mock`, `unittest.mock`
+- **Linting**: `ruff`
+- **Formatting**: `black`
+
+---
+
+## Project Structure
+
+```text
+backend/
+├── main.py                   # FastAPI app factory, router mounts, CORS
+├── config.py                 # Settings (pydantic BaseSettings, env vars)
+├── firebase_client.py        # Firebase Admin SDK singleton init
+├── api/
+│   └── routes/
+│       ├── chat.py           # POST /api/chat, GET /api/chat/stream
+│       └── users.py          # GET/PUT /api/users/{id}/profile, GET/DELETE conversations
+├── agent/
+│   ├── advisor.py            # LangChain ReAct agent factory function
+│   ├── prompt.py             # System prompt builder (injects user profile)
+│   └── tools/
+│       └── search.py         # Tavily search tool wrapper
+├── services/
+│   ├── conversation.py       # Firestore conversation CRUD
+│   └── user_profile.py       # Firestore user profile CRUD
+├── models/
+│   ├── chat.py               # Pydantic request/response schemas
+│   └── user.py               # Pydantic user profile schema
+├── requirements.txt
+├── Dockerfile
+└── tests/
+    ├── conftest.py           # Shared fixtures (mock Firestore, mock LLM)
+    ├── test_conversation.py
+    ├── test_user_profile.py
+    ├── test_agent.py
+    └── test_tools.py
+```
+
+---
+
+## Coding Standards
+
+### Language and Naming Conventions
+
+- **English only**: all variable names, function names, class names, comments, docstrings, error messages, and log messages.
+- **snake_case** for variables, functions, and module names.
+- **PascalCase** for classes and Pydantic models.
+- **UPPER_SNAKE_CASE** for module-level constants.
+- Type hints required on all function signatures (parameters and return types).
+
+```python
+# Good
+async def get_user_profile(user_id: str) -> UserProfile:
+    ...
+
+# Avoid
+async def obtener_perfil(id):
+    ...
+```
+
+### Python Style
+
+- Python 3.11+ syntax; use `match` statements where appropriate.
+- `async/await` for all I/O operations (Firestore, OpenAI, Tavily).
+- Use `from __future__ import annotations` when needed for forward references.
+- No bare `except:` — always catch specific exceptions.
+- Use `logging` module; never use `print()` in production code.
+
+```python
+import logging
+
+logger = logging.getLogger(__name__)
+
+try:
+    doc = db.collection("users").document(user_id).get()
+except Exception as exc:
+    logger.error("Failed to fetch user profile for %s: %s", user_id, exc)
+    raise HTTPException(status_code=500, detail="Failed to fetch user profile")
+```
+
+---
+
+## FastAPI Conventions
+
+### App Factory
+
+`main.py` creates the FastAPI app, configures CORS, and mounts routers:
+
+```python
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+from api.routes import chat, users
+
+app = FastAPI(title="4x4 Off-Road Advisor API")
+
+app.add_middleware(CORSMiddleware, allow_origins=["*"], ...)
+app.include_router(chat.router, prefix="/api")
+app.include_router(users.router, prefix="/api")
+```
+
+### Routers
+
+Each file in `api/routes/` exports a single `router = APIRouter()`.
+Use `Depends()` to inject shared resources (config, Firestore client).
+
+### Request/Response Models
+
+All request bodies and responses are Pydantic `BaseModel` subclasses defined in `models/`.
+Use `response_model=` on route decorators for automatic serialization and docs.
+
+```python
+@router.post("/chat", response_model=ChatResponse)
+async def chat_endpoint(request: ChatRequest) -> ChatResponse:
+    ...
+```
+
+### SSE Streaming
+
+The streaming endpoint uses FastAPI's `StreamingResponse`:
+
+```python
+from fastapi.responses import StreamingResponse
+
+@router.get("/chat/stream")
+async def stream_chat(user_id: str, message: str):
+    async def event_generator():
+        async for token in agent.astream_tokens(message):
+            yield f"data: {token}\n\n"
+        yield "event: done\ndata: {}\n\n"
+
+    return StreamingResponse(event_generator(), media_type="text/event-stream")
+```
+
+### Error Handling
+
+- Use `HTTPException` for all API errors.
+- Standard error response body: `{"detail": "<message>"}` (FastAPI default).
+- Status codes: 400 (validation), 404 (not found), 500 (internal/Firestore/OpenAI errors).
+
+---
+
+## LangChain Agent Conventions
+
+### Agent Factory
+
+`agent/advisor.py` exposes a factory function, not a module-level singleton,
+so tests can inject mocked dependencies:
+
+```python
+from langchain_openai import ChatOpenAI
+from langchain.agents import create_react_agent, AgentExecutor
+
+def build_advisor_agent(system_prompt: str) -> AgentExecutor:
+    llm = ChatOpenAI(model="gpt-4o", streaming=True)
+    tools = [TavilySearchResults(max_results=5)]
+    agent = create_react_agent(llm, tools, prompt=...)
+    return AgentExecutor(agent=agent, tools=tools, verbose=False)
+```
+
+### System Prompt Injection
+
+`agent/prompt.py` builds the system prompt string by interpolating the user's Firestore profile:
+
+```python
+def build_system_prompt(profile: UserProfile) -> str:
+    return f"""You are an expert 4x4 Off-Road Vehicle Advisor...
+
+User's rig:
+- Vehicle: {profile.vehicle}
+- Lift: {profile.lift_height_in}" suspension lift
+- Tires: {profile.tire_size}
+- Locking diffs: {"yes" if profile.locking_diffs else "no"}
+- Primary use: {profile.primary_use}
+- Skill level: {profile.skill_level}
+
+Tailor all advice to this specific rig and experience level."""
+```
+
+### Conversation History
+
+Load from Firestore before each agent call and convert to LangChain message format:
+
+```python
+from langchain_core.messages import HumanMessage, AIMessage
+
+messages = [
+    HumanMessage(content=m["content"]) if m["role"] == "human"
+    else AIMessage(content=m["content"])
+    for m in conversation_doc["messages"]
+]
+```
+
+---
+
+## Firestore Access Patterns
+
+### Initialization
+
+`firebase_client.py` initializes Firebase once (singleton pattern):
+
+```python
+import firebase_admin
+from firebase_admin import credentials, firestore
+
+_db = None
+
+def get_db():
+    global _db
+    if _db is None:
+        cred = credentials.Certificate(load_service_account())
+        firebase_admin.initialize_app(cred)
+        _db = firestore.client()
+    return _db
+```
+
+### Collections
+
+- `users` — one document per user, document ID = `user_id`
+- `conversations` — one document per user, document ID = `user_id`
+
+### Write Pattern
+
+Use `set(data, merge=True)` for upserts (creates or updates without overwriting unset fields):
+
+```python
+db.collection("users").document(user_id).set(data.dict(), merge=True)
+```
+
+Use `update({"messages": firestore.ArrayUnion([new_msg])})` to append messages atomically.
+
+---
+
+## Configuration
+
+`config.py` uses `pydantic-settings`:
+
+```python
+from pydantic_settings import BaseSettings
+
+class Settings(BaseSettings):
+    openai_api_key: str
+    tavily_api_key: str
+    firebase_credentials_json: str  # base64-encoded service account JSON
+    port: int = 8000
+
+    class Config:
+        env_file = ".env"
+
+settings = Settings()
+```
+
+Never hardcode secrets. All sensitive values come from environment variables or GCP Secret Manager.
+
+---
+
+## Testing Standards
+
+### Rules
+
+- **TDD**: write the failing test first, then the minimum implementation to make it pass.
+- **No mocking frameworks** (`unittest.mock`, `patch`, `MagicMock`, `pytest-mock`). Use Nullable Infrastructure + Stubs instead (see below).
+- **No real API calls** in tests — CI must pass without any credentials.
+- **Tests must run in seconds.** No sleeps, no timeouts, no network I/O.
+- Use `pytest-asyncio` for async test functions.
+- Test file naming: `test_{module_name}.py`.
+- **Coverage target: ≥ 80%** measured over the service and agent layers.
+
+### Nullable Infrastructure + Stub Pattern
+
+Design every service to accept its external dependencies as constructor parameters (dependency injection). Provide an in-memory stub for each external boundary in `backend/tests/stubs/`.
+
+**Service design (production)**
+
+```python
+# services/conversation.py
+class ConversationService:
+    def __init__(self, db: ConversationPort) -> None:
+        self._db = db
+
+    def get_messages(self, user_id: str) -> list[Message]:
+        return self._db.get(user_id)
+
+    def append_message(self, user_id: str, role: str, content: str) -> None:
+        self._db.append(user_id, {"role": role, "content": content})
+```
+
+**Stub (tests only)**
+
+```python
+# tests/stubs/conversation_stub.py
+class InMemoryConversationDb:
+    """Nullable stub — no Firestore, no network, instant."""
+    def __init__(self, initial: dict | None = None) -> None:
+        self._store: dict[str, list] = initial or {}
+
+    def get(self, user_id: str) -> list:
+        return self._store.get(user_id, [])
+
+    def append(self, user_id: str, msg: dict) -> None:
+        self._store.setdefault(user_id, []).append(msg)
+```
+
+**Test**
+
+```python
+# tests/test_conversation.py
+from services.conversation import ConversationService
+from tests.stubs.conversation_stub import InMemoryConversationDb
+
+def test_appends_human_message():
+    stub = InMemoryConversationDb()
+    svc = ConversationService(db=stub)
+    svc.append_message("u1", role="human", content="Hi")
+    assert stub.get("u1")[0]["content"] == "Hi"
+```
+
+Apply the same pattern to all boundaries:
+- `StubLLM` — returns a fixed `AIMessage` string synchronously.
+- `StubTavilySearch` — returns a fixed list of search results.
+- `InMemoryUserProfileDb` — in-memory dict for user profile reads/writes.
+
+---
+
+## Security
+
+- All secrets via environment variables — never committed to Git.
+- CORS configured to allow the frontend origin only (not `*`) in production.
+- Firestore access only via backend service account — frontend never touches Firestore directly.
+- Input validation via Pydantic models — FastAPI rejects invalid requests with 422 before hitting route handlers.
+- Log sensitive data (API keys, user emails) at DEBUG level only, never at INFO or above.
+
+---
+
+## Development Scripts
+
+```bash
+# Run development server with hot reload
+uvicorn main:app --reload --port 8000
+
+# Run tests
+pytest
+
+# Run tests with coverage
+pytest --cov=. --cov-report=term-missing
+
+# Lint
+ruff check .
+
+# Format
+black .
+```
+
+---
+
+## Docker
+
+```dockerfile
+FROM python:3.11-slim
+WORKDIR /app
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+COPY . .
+CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8080"]
+```
+
+Port `8080` is the Cloud Run default. Override with `$PORT` env var if needed.
