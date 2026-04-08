@@ -108,6 +108,7 @@ See `ai-specs/.agents/backend-developer.md` and `ai-specs/specs/backend-standard
 ## SSE Event Protocol
 
 The `/api/chat/stream` endpoint emits:
+
 - `data: <token>` — partial token
 - `event: done\ndata: {}` — stream complete
 - `event: error\ndata: {"detail":"..."}` — stream error
